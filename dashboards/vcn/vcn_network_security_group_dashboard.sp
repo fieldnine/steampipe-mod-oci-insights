@@ -23,7 +23,11 @@ dashboard "oci_vcn_network_security_group_dashboard" {
       width = 3
       query = query.oci_vcn_security_group_unrestricted_ingress_rdp_count
     }
-
+    table {
+      title = "Public Allowed Access in NSGs"
+      query = query.vcn_network_security_group_publicly_open
+      type  = "column"
+    }
   }
 
   container {
@@ -46,6 +50,7 @@ dashboard "oci_vcn_network_security_group_dashboard" {
       }
     }
 
+
     chart {
       title = "Ingress RDP Status"
       type  = "donut"
@@ -62,6 +67,21 @@ dashboard "oci_vcn_network_security_group_dashboard" {
       }
     }
 
+    chart {
+      title = "NSG Rules Without Jira Ticket"
+      type  = "donut"
+      width = 3
+      query = query.oci_vcn_securtiy_group_by_jira_ticket
+
+      series "count" {
+        point "compliant" {
+          color = "ok"
+        }
+        point "noncompliant" {
+          color = "alert"
+        }
+      }
+    }
   }
 
   container {
@@ -88,7 +108,6 @@ dashboard "oci_vcn_network_security_group_dashboard" {
       type  = "column"
       width = 3
     }
-
     chart {
       title = "Security Groups by VCN"
       query = query.oci_vcn_security_groups_by_vcn
@@ -252,7 +271,45 @@ query "oci_vcn_security_group_by_ingress_ssh" {
     group by restricted;
   EOQ
 }
-
+query "oci_vcn_securtiy_group_by_jira_ticket"{
+  sql = <<-EOQ
+    with non_compliant_rules as (
+      select
+        id,
+        count(*) as num_noncompliant_rules
+      from
+        oci_core_network_security_group,
+        jsonb_array_elements(rules) as r
+      where
+        r ->> 'description' ~ '[A-Z]+ \d+ .*'
+        and lifecycle_state <> 'TERMINATED'
+      group by id
+    ),
+    sg_list as (
+      select
+        nsg.id,
+        case
+          when non_compliant_rules.id is null then true
+          else false
+        end as restricted
+      from
+        oci_core_network_security_group as nsg
+        left join non_compliant_rules on non_compliant_rules.id = nsg.id
+        left join oci_identity_compartment c on c.id = nsg.compartment_id
+      where
+        nsg.lifecycle_state <> 'TERMINATED'
+    )
+    select
+      case
+        when restricted then 'noncompliant'
+        else 'compliant'
+      end as restrict_ingress_rdp_status,
+      count(*)
+    from
+      sg_list
+    group by restricted;
+  EOQ
+}
 query "oci_vcn_security_group_by_ingress_rdp" {
   sql = <<-EOQ
     with non_compliant_rules as (
@@ -383,5 +440,41 @@ query "oci_vcn_security_groups_by_vcn" {
       sg.lifecycle_state <> 'TERMINATED'
       group by v.display_name
       order by v.display_name;
+  EOQ
+}
+
+query "vcn_network_security_group_publicly_open" {
+  sql = <<-EOQ
+      select
+        display_name,
+        freeform_tags ->> 'Customer' as customer,
+        freeform_tags ->> 'Compartment' as compartment,
+        freeform_tags ->> 'Project' as project,
+        freeform_tags ->> 'Role' as role,		
+        id,
+        r ->> 'source' as source,
+        r ->> 'protocol' as protocol,
+        r -> 'tcpOptions' -> 'destinationPortRange' ->> 'min' as tcp_min,
+        r -> 'tcpOptions' -> 'destinationPortRange' ->> 'max' as tcp_max,
+        r -> 'udpOptions' -> 'destinationPortRange' ->> 'min' as udp_min,
+        r -> 'udpOptions' -> 'destinationPortRange' ->> 'max' as udp_max
+      from
+        oci_core_network_security_group,
+        jsonb_array_elements(rules) as r
+      where
+        r ->> 'direction' = 'INGRESS'
+        and r ->> 'sourceType' = 'CIDR_BLOCK'
+        and r ->> 'source' = '0.0.0.0/0'
+        and (
+          r ->> 'protocol' = 'all'
+          or (
+            (r -> 'tcpOptions' -> 'destinationPortRange' ->> 'min')::integer <= 65535
+            and (r -> 'tcpOptions' -> 'destinationPortRange' ->> 'max')::integer >= 1
+          )
+		  or (
+            (r -> 'udpOptions' -> 'destinationPortRange' ->> 'min')::integer <= 65535
+            and (r -> 'udpOptions' -> 'destinationPortRange' ->> 'max')::integer >= 1
+          )
+        )
   EOQ
 }

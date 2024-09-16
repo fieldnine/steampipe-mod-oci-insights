@@ -1,6 +1,6 @@
 dashboard "compute_instance_age_report" {
 
-  title         = "OCI Compute Instance Age Report"
+  title         = "OCI Compute Instance Patch/Age Report"
   documentation = file("./dashboards/compute/docs/compute_instance_report_age.md")
 
   tags = merge(local.compute_common_tags, {
@@ -125,10 +125,12 @@ query "compute_instance_age_report" {
   sql = <<-EOQ
     select
       i.display_name as "Name",
+      now()::date - (i.tags ->> 'patching_date')::date as "patch in Days",
       now()::date - i.time_created::date as "Age in Days",
       i.time_created as "Create Time",
       i.lifecycle_state as "Lifecycle State",
       t.title as "Tenancy",
+      i.freeform_tags ->> 'Customer' as customer,
       coalesce(c.title, 'root') as "Compartment",
       i.region as "Region",
       i.id as "OCID"

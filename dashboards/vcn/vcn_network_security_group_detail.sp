@@ -38,7 +38,11 @@ dashboard "vcn_network_security_group_detail" {
       query = query.vcn_network_security_group_ingress_rdp
       args  = [self.input.security_group_id.value]
     }
-
+    card {
+      width = 3
+      query = query.vcn_network_security_group_jira_ticket
+      args  = [self.input.security_group_id.value]
+    }
   }
 
   with "compute_instances_for_vcn_network_security_group" {
@@ -550,6 +554,7 @@ query "vcn_network_security_group_assoc" {
 query "vcn_network_security_group_ingress_rule" {
   sql = <<-EOQ
     select
+      r ->> 'description' as "Description",
       r ->> 'protocol' as "Protocol",
       r ->> 'source' as "Source",
       r ->> 'isStateless' as "Stateless",
@@ -566,6 +571,7 @@ query "vcn_network_security_group_ingress_rule" {
 query "vcn_network_security_group_egress_rule" {
   sql = <<-EOQ
     select
+      r ->> 'description' as "Description",
       r ->> 'protocol' as "Protocol",
       r ->> 'destination' as "Destination",
       r ->> 'isStateless' as "Stateless",
@@ -577,4 +583,31 @@ query "vcn_network_security_group_egress_rule" {
       r ->> 'direction' = 'EGRESS' and
       id  = $1 and lifecycle_state <> 'TERMINATED';
   EOQ
+}
+
+query "vcn_network_security_group_jira_ticket" {
+  sql = <<-EOQ
+    with non_compliant_rules as (
+      select
+        id,
+        count(*) as num_noncompliant_rules
+      from
+        oci_core_network_security_group,
+        jsonb_array_elements(rules) as r
+      where
+        r ->> 'description' !~ '[A-Z]+ \d+ .*'
+        and lifecycle_state <> 'TERMINATED'
+      group by id
+      )
+      select
+        case when non_compliant_rules.id is null then 'Compliant' else 'Noncompliant' end as value,
+        'NSG Rules Without Jira Ticket' as label,
+        case when non_compliant_rules.id is null then 'ok' else 'alert' end as type
+      from
+        oci_core_network_security_group as nsg
+        left join non_compliant_rules on non_compliant_rules.id = nsg.id
+      where
+        nsg.id = $1 and nsg.lifecycle_state <> 'TERMINATED';
+  EOQ
+
 }
